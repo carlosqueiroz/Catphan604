@@ -19,22 +19,28 @@ from .profile import CollapsedCircleProfile, SingleProfile
 from .roi import DiskROI, RectangleROI, LowContrastDiskROI
 
 
-class CatPhanBase:
-    """分析CatPhan 604模体DICOM CT图像，图像来源于CT或者CBCT扫描
-    分析模块包括: Uniformity (CTP719), Low-Contrast module (CTP730), Resolution geometry test module (CTP732).
+class CatPhan604:
+    """分析CatPhan 604模体DICOM CT图像，数据来源于CT或者CBCT扫描，分析模块包括: Uniformity (CTP729),
+    Low-Contrast module (CTP730), Resolution geometry test module (CTP732).
     """
-    # 不同密度插件半径（mm）
-    air_bubble_radius_mm = 7
-    # 插件距图像中心距离（mm）
-    localization_radius = 59
+    air_bubble_radius_mm = 7    # 不同密度插件半径（mm）
+    localization_radius = 59    # 插件距Slice中心距离（mm）
+    catphan_radius_mm = 101     # 模体半径
+
+    offsets = {
+        'Uniformity': -70,      # 均匀性模块偏移HU线性检测中心Slice -70 mm （理论值为-80 mm）
+        'Low contrast': -40,    # 低对比度模块偏移HU线性检测中心Slice -40 mm
+        'Spatial Resolution': 40,   # 空间分辨率模块模块偏移HU线性检测中心Slice 40 mm
+    }
 
     def __init__(self, folderpath):
-        self.origin_slice = 0
-        self.catphan_roll = 0
         if not osp.isdir(folderpath):
             raise NotADirectoryError("Path given was not a Directory/Folder")
         self.dicom_stack = image.DicomImageStack(folderpath)
-        self.localize()
+        # HU线性检测中心断层（Slice）
+        self.origin_slice = self.find_origin_slice()
+        # Catphan模体摆位旋转偏差角度
+        self.catphan_roll = self.find_phantom_roll()
 
     @classmethod
     def from_zip(cls, zip_file):
@@ -72,7 +78,7 @@ class CatPhanBase:
         # plot the images
         show_section = [uniformity, hu, spatial_res, low_contrast]
         axes = (unif_ax, hu_ax, sr_ax, locon_ax)
-        modules = ['ctp486', 'ctp404', 'ctp528', 'ctp515']
+        modules = ['ctp729', 'ctp732', 'ctp728', 'ctp730']
         titles = ('Uniformity', 'HU & Geometry', 'Spatial Resolution', 'Low Contrast')
         for show_unit, axis, title, module in zip(show_section, axes, titles, modules):
             if show_unit:
@@ -86,9 +92,9 @@ class CatPhanBase:
             axis.axis('off')
 
         # plot the other sections
-        self.ctp404.plot_linearity(hu_lin_ax)
-        self.ctp486.plot_profiles(unif_prof_ax)
-        self.ctp528.plot_mtf(mtf_ax)
+        self.ctp732.plot_linearity(hu_lin_ax)
+        self.ctp729.plot_profiles(unif_prof_ax)
+        self.ctp728.plot_mtf(mtf_ax)
 
         # finish up
         plt.tight_layout()
@@ -96,7 +102,7 @@ class CatPhanBase:
             plt.show()
 
     def plot_single_frame(self):
-        modules = ['ctp486', 'ctp404', 'ctp528', 'ctp515']
+        modules = ['ctp729', 'ctp732', 'ctp728', 'ctp730']
         titles = ('Uniformity', 'HU & Geometry', 'Spatial Resolution', 'Low Contrast')
         for title, module in zip(titles, modules):
             plt.figure(title, figsize=(8, 8))
@@ -107,10 +113,10 @@ class CatPhanBase:
     def plot_center_hu(self, filename, **kwargs):
         plt.figure('HU & Genometry')
         plt.axis('off')
-        plt.imshow(self.ctp404.image, cmap=cm.gray)
-        center = self.ctp404.phan_center
+        plt.imshow(self.ctp732.image, cmap=cm.gray)
+        center = self.ctp732.phan_center
         circle_prof = CollapsedCircleProfile(center, radius=self.localization_radius / self.mm_per_pixel,
-                                              image_array=self.ctp404.image, width_ratio=0.02, num_profiles=2)
+                                             image_array=self.ctp732.image, width_ratio=0.02, num_profiles=2)
         ax = plt.gca()
         circle_prof.plot2axes(ax)
         plt.autoscale(tight=True)
@@ -186,33 +192,33 @@ class CatPhanBase:
         plt.axis('off')
 
         if 'hu' in subimage:  # HU, GEO & thickness objects
-            plt.imshow(self.ctp404.image.array, cmap=cm.gray)
-            self.ctp404.plot_rois(plt.gca())
+            plt.imshow(self.ctp732.image.array, cmap=cm.gray)
+            self.ctp732.plot_rois(plt.gca())
             plt.autoscale(tight=True)
         elif 'un' in subimage:  # uniformity
-            plt.imshow(self.ctp486.image.array, cmap=cm.gray)
-            self.ctp486.plot_rois(plt.gca())
+            plt.imshow(self.ctp729.image.array, cmap=cm.gray)
+            self.ctp729.plot_rois(plt.gca())
             plt.autoscale(tight=True)
         elif 'sp' in subimage:  # SR objects
-            plt.imshow(self.ctp528.image.array, cmap=cm.gray)
-            self.ctp528.plot_rois(plt.gca())
+            plt.imshow(self.ctp728.image.array, cmap=cm.gray)
+            self.ctp728.plot_rois(plt.gca())
             plt.autoscale(tight=True)
         elif 'mtf' in subimage:
             subimage = 'mtf'
             plt.axis('on')
-            points = self.ctp528.plot_mtf(plt.gca())
+            points = self.ctp728.plot_mtf(plt.gca())
         elif 'lc' in subimage:
-            plt.imshow(self.ctp515.image.array, cmap=cm.gray)
-            self.ctp515.plot_rois(plt.gca())
+            plt.imshow(self.ctp730.image.array, cmap=cm.gray)
+            self.ctp730.plot_rois(plt.gca())
             plt.autoscale(tight=True)
         elif 'lin' in subimage:
             subimage = 'lin'
             plt.axis('on')
-            points = self.ctp404.plot_linearity(plt.gca(), delta)
+            points = self.ctp732.plot_linearity(plt.gca(), delta)
         elif 'prof' in subimage:
             subimage = 'prof'
             plt.axis('on')
-            self.ctp486.plot_profiles(plt.gca())
+            self.ctp729.plot_profiles(plt.gca())
         else:
             raise ValueError("Subimage parameter {0} not understood".format(subimage))
 
@@ -246,38 +252,29 @@ class CatPhanBase:
         print("Origin slice: {}".format(self.find_origin_slice()))
         mtfs = {}
         for mtf in (30, 50, 80):
-            mtfval = self.ctp528.mtf(mtf)
+            mtfval = self.ctp728.mtf(mtf)
             mtfs[mtf] = mtfval
         print('MTFs: {}'.format(mtfs))
-
-    def localize(self):
-        # 找到HU线性模块中心断层图像
-        self.origin_slice = self.find_origin_slice()
-        # 找到Catphan模体旋转角度
-        self.catphan_roll = self.find_phantom_roll()
 
     @property
     def mm_per_pixel(self):
         """The millimeters per pixel of the DICOM images."""
         return self.dicom_stack.metadata.PixelSpacing[0]
 
-    @lru_cache(maxsize=1)
+    @lru_cache(maxsize=1)   # least recently used (lru)，装饰器实现备忘功能，把耗时函数的结果保存下来，避免传入相同参数时重复计算
     def find_origin_slice(self):
-        """Using a brute force search of the images, find the median HU linearity slice.
+        """使用蛮力搜索方法找到HU线性检测单元中心断层
 
-        This method walks through all the images and takes a collapsed circle profile where the HU
-        linearity ROIs are. If the profile contains both low (<800) and high (>800) HU values and most values are the same
-        (i.e. it's not an artifact), then
-        it can be assumed it is an HU linearity slice. The median of all applicable slices is the
-        center of the HU slice.
-
+        对所有图像以59 mm为半径画Profile，
+        1. 不同材料插入件ROI附近断层Profile包括>800 HU和<800 HU，
+        2. Profile HU值80%和20%百分位数<100
+        找到所有满足上述两个条件所有Slice，其中位数为HU Slice
         Returns
         -------
         int
-            The middle slice of the HU linearity module.
+            HU线性检测模块中心断层
         """
         hu_slices = []
-        # use a machine-learning classifier
         if not hu_slices:
             for image_number in range(0, self.num_images, 2):
                 slice = Slice(self, image_number, combine=False)
@@ -286,13 +283,14 @@ class CatPhanBase:
                 except ValueError:  # a slice without the phantom in view
                     pass
                 else:
-                    circle_prof = CollapsedCircleProfile(center, radius=self.localization_radius/self.mm_per_pixel, image_array=slice.image, width_ratio=0.05, num_profiles=5)
+                    circle_prof = CollapsedCircleProfile(center, radius=self.localization_radius / self.mm_per_pixel,
+                                                         image_array=slice.image, width_ratio=0.05, num_profiles=5)
                     prof = circle_prof.values
                     # determine if the profile contains both low and high values and that most values are the same
                     low_end, high_end = np.percentile(prof, [2, 98])
                     median = np.median(prof)
                     if (low_end < median - 400) and (high_end > median + 400) and (
-                                    np.percentile(prof, 80) - np.percentile(prof, 20) < 100):
+                            np.percentile(prof, 80) - np.percentile(prof, 20) < 100):
                         hu_slices.append(image_number)
 
         if not hu_slices:
@@ -301,7 +299,7 @@ class CatPhanBase:
         c = int(round(np.median(hu_slices)))
         ln = len(hu_slices)
         # drop slices that are way far from median
-        hu_slices = hu_slices[((c + ln/2) > hu_slices) & (hu_slices > (c - ln/2))]
+        hu_slices = hu_slices[((c + ln / 2) > hu_slices) & (hu_slices > (c - ln / 2))]
         center_hu_slice = int(round(np.median(hu_slices)))
         if self._is_within_image_extent(center_hu_slice):
             return center_hu_slice
@@ -316,6 +314,7 @@ class CatPhanBase:
         -------
         float : the angle of the phantom in **degrees**.
         """
+
         def is_right_area(region):
             thresh = np.pi * ((self.air_bubble_radius_mm / self.mm_per_pixel) ** 2)
             return thresh * 1.5 > region.filled_area > thresh / 1.5
@@ -338,11 +337,7 @@ class CatPhanBase:
 
     @property
     def num_images(self):
-        """Return the number of images loaded.
-
-        Returns
-        -------
-        float
+        """返回一次扫描（.zip）Slice数目
         """
         return len(self.dicom_stack)
 
@@ -356,18 +351,14 @@ class CatPhanBase:
 
     @property
     def catphan_size(self):
-        """The expected size of the phantom in pixels, based on a 20cm wide phantom.
-
-        Returns
-        -------
-        float
-        """
-        phan_area = np.pi*(self.catphan_radius_mm**2)
-        return phan_area/(self.mm_per_pixel**2)
+        """Slice像素数目"""
+        phan_area = np.pi * (self.catphan_radius_mm ** 2)
+        return phan_area / (self.mm_per_pixel ** 2)
 
     def _zip_images(self):
         """Compress the raw images into a ZIP archive and remove the uncompressed images."""
-        zip_name = "{}\CBCT - {}.zip".format(osp.dirname(self.dicom_stack[0].path), self.dicom_stack[0].date_created(format="%A, %I-%M-%S, %B %d, %Y"))
+        zip_name = "{}\CBCT - {}.zip".format(osp.dirname(self.dicom_stack[0].path),
+                                             self.dicom_stack[0].date_created(format="%A, %I-%M-%S, %B %d, %Y"))
         with zipfile.ZipFile(zip_name, 'w', compression=zipfile.ZIP_DEFLATED) as zfile:
             for image in self.dicom_stack:
                 zfile.write(image.path, arcname=osp.basename(image.path))
@@ -376,20 +367,6 @@ class CatPhanBase:
                 os.remove(image.path)
             except:
                 pass
-
-
-class CatPhan604(CatPhanBase):
-    """A class for loading and analyzing CT DICOM files of a CatPhan 604. Can be from a CBCT or CT scanner
-    Analyzes: Uniformity (CTP486), High-Contrast Spatial Resolution (CTP528),
-    Image Scaling & HU Linearity (CTP404), and Low contrast (CTP515).
-    """
-    _classifier_model = '604'
-    catphan_radius_mm = 101
-    offsets = {
-        'Uniformity': -70,
-        'Low contrast': -40,
-        'Spatial Resolution': 40,
-    }
 
     def return_results(self):
         """Return the results of the analysis as a string. Use with print()."""
@@ -400,47 +377,43 @@ class CatPhan604(CatPhanBase):
                   'Uniformity index: {}\n'
                   'Integral non-uniformity: {}\n'
                   'Uniformity Passed?: {}\n'
-                  'MTF 30% (lp/mm): {}\n'
                   'MTF 50% (lp/mm): {}\n'
-                  'MTF 80% (lp/mm): {}\n'
                   'Low contrast ROIs "seen": {}\n'
                   'Low contrast visibility: {}\n'
                   'Geometric Line Average (mm): {}\n'
                   'Geometry Passed?: {}\n'
                   'Slice Thickness (mm): {}\n'
-                  'Slice Thickness Passed? {}\n').format(self.ctp404.hu_roi_vals, self.ctp404.passed_hu,
-                                                         self.ctp486.get_ROI_vals(), self.ctp486.uniformity_index,
-                                                         self.ctp486.integral_non_uniformity, self.ctp486.overall_passed,
-                                                         self.ctp528.mtf(30),
-                                                         self.ctp528.mtf(50),
-                                                         self.ctp528.mtf(80),
-                                                         self.ctp515.rois_visible, self.ctp404.lcv,
-                                                         self.ctp404.avg_line_length, self.ctp404.passed_geometry,
-                                                         self.ctp404.meas_slice_thickness,
-                                                         self.ctp404.passed_thickness)
+                  'Slice Thickness Passed? {}\n').format(self.ctp732.hu_roi_vals, self.ctp732.passed_hu,
+                                                         self.ctp729.get_ROI_vals(), self.ctp729.uniformity_index,
+                                                         self.ctp729.integral_non_uniformity, self.ctp729.overall_passed,
+                                                         self.ctp728.mtf(50),
+                                                         self.ctp730.rois_visible, self.ctp732.lcv,
+                                                         self.ctp732.avg_line_length, self.ctp732.passed_geometry,
+                                                         self.ctp732.meas_slice_thickness,
+                                                         self.ctp732.passed_thickness)
         return string
 
     def write_csv(self, filename="test.csv"):
         """Return the results of the analysis as a list. Write to CSV file. by Jinyan-hu"""
         list = []
-        """
-        for key, value in self.ctp404.hu_rois.items():
+
+        for key, value in self.ctp732.hu_rois.items():
             list.append(value.pixel_value)
-        #for key, value in self.ctp486.rois.items():
-        #    list.append(value.pixel_value)
-        for key, value in self.ctp528.mtfs.items():
+        for key, value in self.ctp729.rois.items():
+            list.append(value.pixel_value)
+        for key, value in self.ctp728.mtfs.items():
             list.append(key)
             list.append(value)
-        list.append(self.ctp486.uniformity_index)
-        #list.append(self.ctp486.integral_non_uniformity)
-        #list.append(self.ctp528.mtf(50))
-        list.append(self.ctp515.rois_visible)
-        list.append(self.ctp404.lcv)
-        list.append(self.ctp404.avg_line_length)
-        list.append(self.ctp404.meas_slice_thickness)
+        list.append(self.ctp729.uniformity_index)
+        list.append(self.ctp729.integral_non_uniformity)
+        list.append(self.ctp728.mtf(50))
+        list.append(self.ctp730.rois_visible)
+        list.append(self.ctp732.lcv)
+        list.append(self.ctp732.avg_line_length)
+        list.append(self.ctp732.meas_slice_thickness)
         # print(list)
-        """
-        for key, value in self.ctp528.mtfs.items():
+
+        for key, value in self.ctp728.mtfs.items():
             list.append(key)
             list.append(value)
         with open(filename, "a") as csvfile:
@@ -457,9 +430,9 @@ class CatPhan604(CatPhanBase):
         hu_tolerance : int
             The HU tolerance value for both HU uniformity and linearity.
         scaling_tolerance : float, int
-            The scaling tolerance in mm of the geometric nodes on the HU linearity slice (CTP404 module).
+            The scaling tolerance in mm of the geometric nodes on the HU linearity slice (CTP732 module).
         thickness_tolerance : float, int
-            The tolerance of the thickness calculation in mm, based on the wire ramps in the CTP404 module.
+            The tolerance of the thickness calculation in mm, based on the wire ramps in the CTP732 module.
 
             .. warning:: Thickness accuracy degrades with image noise; i.e. low mAs images are less accurate.
 
@@ -471,11 +444,11 @@ class CatPhan604(CatPhanBase):
             If the CT images were not compressed before analysis and this is set to true, pylinac will compress
             the analyzed images into a ZIP archive.
         """
-        self.ctp404 = CTP404(self, offset=0, hu_tolerance=hu_tolerance, thickness_tolerance=thickness_tolerance,
+        self.ctp732 = CTP732(self, offset=0, hu_tolerance=hu_tolerance, thickness_tolerance=thickness_tolerance,
                              scaling_tolerance=scaling_tolerance)
-        self.ctp486 = CTP486(self, offset=self.offsets['Uniformity'], tolerance=hu_tolerance)
-        self.ctp528 = CTP528(self, tolerance=None, offset=self.offsets['Spatial Resolution'])
-        self.ctp515 = CTP515(self, tolerance=low_contrast_tolerance, cnr_threshold=cnr_threshold, offset=self.offsets['Low contrast'])
+        self.ctp729 = CTP729(self, offset=self.offsets['Uniformity'], tolerance=hu_tolerance)
+        self.ctp728 = CTP728(self, tolerance=None, offset=self.offsets['Spatial Resolution'])
+        self.ctp730 = CTP730(self, tolerance=low_contrast_tolerance, cnr_threshold=cnr_threshold, offset=self.offsets['Low contrast'])
         if zip_after and not self.was_from_zip:
             self._zip_images()
 
@@ -598,7 +571,7 @@ class Slice:
         """
         Parameters
         ----------
-        catphan : `~pylinac.cbct.CatPhanBase` instance.
+        catphan : `CatPhan instance.
         slice_num : int
             The slice number of the DICOM array desired. If None, will use the ``slice_num`` property of subclass.
         combine : bool
@@ -626,7 +599,7 @@ class Slice:
     @property
     @lru_cache(maxsize=1)
     def phan_center(self):
-        """Determine the location of the center of the phantom.
+        """确定Phantom Slice中心
 
         The image is analyzed to see if:
         1) the CatPhan is even in the image (if there were any ROIs detected)
@@ -638,7 +611,7 @@ class Slice:
         ValueError
             If any of the above conditions are not met.
         """
-        # convert the slice to binary and label ROIs
+        # scharr算子边缘检测，图像转换为黑白（binary）
         edges = filters.scharr(self.image.as_type(np.float))
         if np.max(edges) < 0.1:
             raise ValueError("Unable to locate Catphan")
@@ -701,15 +674,15 @@ class CatPhanModule(Slice, ROIManagerMixin):
         pass
 
 
-class CTP404(CatPhanModule):
-    """Class for analysis of the HU linearity, geometry, and slice thickness regions of the CTP404.
+class CTP732(CatPhanModule):
+    """Class for analysis of the HU linearity, geometry, and slice thickness regions of the CTP732.
     """
 
     def __init__(self, catphan, offset, hu_tolerance, thickness_tolerance, scaling_tolerance):
         """
         Parameters
         ----------
-        catphan : `~pylinac.cbct.CatPhanBase` instance.
+        catphan : `~CatPhan` instance.
         offset : float
         hu_tolerance : float
         thickness_tolerance : float
@@ -898,7 +871,7 @@ class CTP404(CatPhanModule):
         return all(line.passed for line in self.lines.values())
 
 
-class CTP486(CatPhanModule):
+class CTP729(CatPhanModule):
     """Class for analysis of the Uniformity slice of the CTP module. Measures 5 ROIs around the slice that
     should all be close to the same value.
     """
@@ -963,7 +936,7 @@ class CTP486(CatPhanModule):
         return (maxhu - minhu)/(maxhu + minhu + 2000)
 
 
-class CTP528(CatPhanModule):
+class CTP728(CatPhanModule):
     """Class for analysis of the Spatial Resolution slice of the CBCT dicom data set.
 
     A collapsed circle profile is taken of the line-pair region. This profile is search for
@@ -1164,7 +1137,7 @@ class GeometricLine(Line):
         return self.length*self.mm_per_pixel
 
 
-class CTP515(CatPhanModule):
+class CTP730(CatPhanModule):
     """Class for analysis of the low contrast slice of the CTP module. Low contrast is measured by obtaining
     the average pixel value of the contrast ROIs and comparing that value to the average background value. To obtain
     a more "human" detection level, the contrast (which is largely the same across different-sized ROIs) is multiplied
@@ -1288,7 +1261,7 @@ def combine_surrounding_slices(dicomstack, nominal_slice_num, slices_plusminus=1
 
     Parameters
     ----------
-    dicomstack : `~pylinac.core.image.DicomImageStack`
+    dicomstack : `~image.DicomImageStack`
         The CBCT DICOM stack.
     nominal_slice_num : int
         The slice of interest (along 3rd dim).
@@ -1315,15 +1288,9 @@ def combine_surrounding_slices(dicomstack, nominal_slice_num, slices_plusminus=1
 
 
 class TemporaryZipDirectory(TemporaryDirectory):
-    """Creates a temporary directory that unpacks a ZIP archive."""
+    """创建一个临时目录解压.ZIP文件"""
 
     def __init__(self, zfile):
-        """
-        Parameters
-        ----------
-        zfile : str
-            String that points to a ZIP archive.
-        """
         super().__init__()
         zfiles = zipfile.ZipFile(zfile)
         zfiles.extractall(path=self.name)
